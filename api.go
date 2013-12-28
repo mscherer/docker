@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"expvar"
 	"fmt"
+	"github.com/coreos/go-systemd/activation"
 	"github.com/dotcloud/docker/archive"
 	"github.com/dotcloud/docker/auth"
 	"github.com/dotcloud/docker/engine"
@@ -1227,38 +1228,52 @@ func ServeRequest(srv *Server, apiversion float64, w http.ResponseWriter, req *h
 }
 
 func ListenAndServe(proto, addr string, srv *Server, logging bool) error {
+	var l net.Listener
+	var err error
+	var httpSrv http.Server
 	r, err := createRouter(srv, logging)
 	if err != nil {
 		return err
 	}
-	l, e := net.Listen(proto, addr)
-	if e != nil {
-		return e
-	}
-	if proto == "unix" {
-		if err := os.Chmod(addr, 0660); err != nil {
-			return err
-		}
-
-		groups, err := ioutil.ReadFile("/etc/group")
+	files := activation.Files(true)
+	if len(files) > 1 {
+		return fmt.Errorf("Received too much file descriptors from systemd")
+	} else if len(files) == 1 {
+		l, err = net.FileListener(files[0])
 		if err != nil {
 			return err
 		}
-		re := regexp.MustCompile("(^|\n)docker:.*?:([0-9]+)")
-		if gidMatch := re.FindStringSubmatch(string(groups)); gidMatch != nil {
-			gid, err := strconv.Atoi(gidMatch[2])
+		httpSrv = http.Server{Handler: r}
+		log.Printf("Activated using systemd\n")
+	} else {
+		l, err = net.Listen(proto, addr)
+		if err != nil {
+			return err
+		}
+		if proto == "unix" {
+			if err := os.Chmod(addr, 0660); err != nil {
+				return err
+			}
+
+			groups, err := ioutil.ReadFile("/etc/group")
 			if err != nil {
 				return err
 			}
-			utils.Debugf("docker group found. gid: %d", gid)
-			if err := os.Chown(addr, 0, gid); err != nil {
-				return err
+			re := regexp.MustCompile("(^|\n)docker:.*?:([0-9]+)")
+			if gidMatch := re.FindStringSubmatch(string(groups)); gidMatch != nil {
+				gid, err := strconv.Atoi(gidMatch[2])
+				if err != nil {
+					return err
+				}
+				utils.Debugf("docker group found. gid: %d", gid)
+				if err := os.Chown(addr, 0, gid); err != nil {
+					return err
+				}
 			}
 		}
+		httpSrv = http.Server{Addr: addr, Handler: r}
+		log.Printf("Listening for HTTP on %s (%s)\n", addr, proto)
 	}
-	httpSrv := http.Server{Addr: addr, Handler: r}
-
-	log.Printf("Listening for HTTP on %s (%s)\n", addr, proto)
 	// Tell the init daemon we are accepting requests
 	go systemd.SdNotify("READY=1")
 	return httpSrv.Serve(l)

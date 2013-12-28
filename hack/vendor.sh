@@ -50,3 +50,5 @@ clone git github.com/syndtr/gocapability 3454319be2
 clone hg code.google.com/p/go.net 84a4013f96e0
 
 clone hg code.google.com/p/gosqlite 74691fb6f837
+
+clone git github.com/coreos/go-systemd 700560af03
